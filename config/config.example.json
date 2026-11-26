@@ -1,0 +1,31 @@
+{
+  "daemonHost": "127.0.0.1",
+  "daemonPort": 18790,
+  "cdpPortBase": 19222,
+  "preferredBrowser": "chrome",
+  "chromeExecutablePath": "",
+  "windowMode": "headless",
+  "language": "en",
+  "proxyServer": "",
+  "defaultAccount": "default",
+  "routingPolicy": "pro_first",
+  "quotaCooldownMinutes": {
+    "chat": 30,
+    "image": 60,
+    "canvas": 60,
+    "deep_research": 120,
+    "video": 360
+  },
+  "maxGlobalConcurrency": 2,
+  "minGlobalStaggerMs": 2500,
+  "minAccountIntervalMs": 5000,
+  "maxRequestsPerMinute": 6,
+  "maxRequestsPerHourPerAccount": 30,
+  "circuitBreakerMinutes": 10,
+  "idleSessionMinutes": 10,
+  "tierRefreshHours": 24,
+  "navigationTimeoutMs": 45000,
+  "responseTimeoutMs": 180000,
+  "longTaskTimeoutMs": 900000,
+  "mediaWaitTimeoutMs": 180000
+}

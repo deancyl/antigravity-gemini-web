@@ -1,0 +1,12 @@
+{
+  "name": "gemini-web",
+  "displayName": "Gemini Web Bridge",
+  "description": "Use Gemini web (gemini.google.com) capabilities directly from Antigravity with isolated multi-account Chrome profiles, Pro-first smart routing, quota cooldown failover, Deep Research, Canvas, Gems, file uploads, and local image/video download.",
+  "version": "1.0.0",
+  "repository": "https://github.com/deancyl/antigravity-gemini-web",
+  "suggestedPrompts": [
+    "登录我的 Gemini 网页版账号并查看当前可用模型和模式",
+    "用 Gemini 网页版启动一个 Deep Research 深度研究任务",
+    "调用 Gemini 网页版生成一张概念图并保存到本地"
+  ]
+}

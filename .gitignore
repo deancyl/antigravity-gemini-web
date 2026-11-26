@@ -1,0 +1,15 @@
+node_modules/
+dist/
+*.log
+logs/*
+!logs/.gitkeep
+data/*
+!data/.gitkeep
+config/config.json
+.env
+.env.*
+*.pid
+*.tmp
+*.corrupted.*
+.DS_Store
+Thumbs.db

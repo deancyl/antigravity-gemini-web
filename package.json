@@ -1,0 +1,23 @@
+﻿{
+  "name": "gemini-web-bridge",
+  "version": "1.0.0",
+  "description": "Antigravity Gemini 网页版桥接服务（多账号隔离/模型切换/任务模式/媒体落盘）",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test dist/tests/*.test.js",
+    "start:daemon": "node dist/src/daemon.js --daemon-main",
+    "start:mcp": "node dist/src/mcp-server.js",
+    "cli": "node dist/src/cli.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "playwright-core": "^1.52.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "typescript": "^5.8.3"
+  }
+}

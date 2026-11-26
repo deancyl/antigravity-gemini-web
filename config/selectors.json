@@ -1,0 +1,166 @@
+{
+  "_comment": "集中维护 Gemini 网页版语义化定位器；已对齐当前线上 gem-menu / Upload & tools 真实 DOM，页面改版时可直接热更新此文件。",
+  "appUrl": "https://gemini.google.com/app",
+  "loginIndicators": [
+    "a[href*='accounts.google.com/ServiceLogin']",
+    "button:has-text('Sign in')",
+    "a:has-text('Sign in')",
+    "button:has-text('登录')",
+    "a:has-text('登录')"
+  ],
+  "captchaIndicators": [
+    "iframe[src*='recaptcha']",
+    "iframe[src*='accounts.google.com/v3/signin/challenge']",
+    "#captcha-form",
+    "text=/Verify it's you|验证您的身份|unusual traffic|异常流量/i"
+  ],
+  "quotaToastIndicators": [
+    "[role='alert']",
+    "[role='status']",
+    ".mat-mdc-snack-bar-label",
+    "text=/reached your limit|usage limit|已达上限|额度已用完|try again later/i"
+  ],
+  "promptInput": [
+    "div.ql-editor[contenteditable='true']",
+    "rich-textarea div[contenteditable='true']",
+    "div[role='textbox'][contenteditable='true']",
+    "textarea[aria-label*='prompt' i]",
+    "textarea[aria-label*='Enter' i]"
+  ],
+  "sendButton": [
+    "button[aria-label='Send message']",
+    "button[aria-label*='Send' i]:not([disabled])",
+    "button[aria-label*='发送']:not([disabled])",
+    "button.send-button:not([disabled])"
+  ],
+  "stopButton": [
+    "button[aria-label*='Stop response' i]",
+    "button[aria-label*='Stop generating' i]",
+    "button[aria-label*='停止']",
+    "button.stop-button"
+  ],
+  "modelPickerButton": [
+    "button[data-test-id='bard-mode-menu-button']",
+    "button[aria-label*='Open mode picker' i]",
+    "bard-mode-switcher button",
+    "button[aria-haspopup='menu']:has-text(/Auto|Gemini|Flash|Pro|Thinking|Hydrogen|Neon|Carbon/i)",
+    "button[aria-label*='model' i]",
+    "button[aria-label*='模型']"
+  ],
+  "modelMenuItems": [
+    "gem-menu[role='menu'] gem-menu-item[role='menuitemradio']",
+    ".cdk-overlay-pane gem-menu-item[role='menuitemradio']",
+    "gem-menu-item[role='menuitemradio']",
+    "div[role='menu'] button[role='menuitem']",
+    "div[role='menu'] [role='menuitemradio']",
+    "div.cdk-overlay-pane button[role='menuitem']"
+  ],
+  "toolsMenuButton": [
+    "button[aria-label='Upload & tools']",
+    "button[aria-label*='Upload & tools' i]",
+    "button[aria-label*='Tools' i]",
+    "button:has-text('Tools')",
+    "button[aria-label*='工具']",
+    "button:has-text('工具')",
+    "button[data-test-id='toolbox-drawer-button']"
+  ],
+  "moreToolsTrigger": [
+    "gem-menu-item:has-text('More tools')",
+    "[role='menuitem']:has-text('More tools')",
+    "gem-menu-item:has-text('更多工具')",
+    "[role='menuitem']:has-text('更多工具')"
+  ],
+  "uploadMenuButton": [
+    "button[aria-label='Upload & tools']",
+    "button[aria-label*='Open upload file menu' i]",
+    "button[aria-label*='Add files' i]",
+    "button[aria-label*='Upload' i]",
+    "button[aria-label*='上传']",
+    "button[data-test-id='upload-file-button']"
+  ],
+  "uploadFileOption": [
+    "button[data-test-id='local-images-files-uploader-button']",
+    "gem-menu-item:has-text('Upload files')",
+    "button:has-text('Upload files')",
+    "button:has-text('Upload from computer')",
+    "gem-menu-item:has-text('上传文件')",
+    "[role='menuitem']:has-text(/Upload files|上传文件/i)"
+  ],
+  "fileInput": [
+    "input[type='file']"
+  ],
+  "modeChips": {
+    "deep_research": [
+      "gem-menu-item:has-text('Deep research')",
+      "gem-menu-item:has-text('Deep Research')",
+      "[role='menuitemcheckbox']:has-text(/Deep research/i)",
+      "[role='menuitem']:has-text(/Deep research/i)",
+      "button:has-text(/Deep research/i)",
+      "gem-menu-item:has-text('深度研究')",
+      "button:has-text('深度研究')"
+    ],
+    "canvas": [
+      "gem-menu-item:has-text('Canvas')",
+      "[role='menuitemcheckbox']:has-text('Canvas')",
+      "[role='menuitem']:has-text('Canvas')",
+      "button:has-text('Canvas')"
+    ],
+    "image": [
+      "gem-menu-item:has-text('Create image')",
+      "[role='menuitemcheckbox']:has-text(/Create image|Imagen|生成图片/i)",
+      "[role='menuitem']:has-text(/Create image|Imagen|Generate image|生成图片/i)",
+      "button:has-text('Create images')",
+      "button:has-text('Create image')"
+    ],
+    "video": [
+      "gem-menu-item:has-text('Create video')",
+      "[role='menuitemcheckbox']:has-text(/Create video|Veo|生成视频/i)",
+      "[role='menuitem']:has-text(/Create video|Veo|Generate video|生成视频/i)",
+      "button:has-text('Create videos')",
+      "button:has-text('Create video')"
+    ]
+  },
+  "deepResearchConfirmButton": [
+    "button:has-text('Start research')",
+    "button:has-text('开始研究')",
+    "button[data-test-id='confirm-button']"
+  ],
+  "responseContainers": [
+    "model-response",
+    "message-content",
+    "[data-test-id='model-response']",
+    ".model-response-text"
+  ],
+  "copyResponseButton": [
+    "button[aria-label='Copy']",
+    "button[aria-label='Copy response']",
+    "button[aria-label*='Copy response' i]",
+    "copy-button button",
+    "button[aria-label='复制']",
+    "button[aria-label*='复制回答']"
+  ],
+  "canvasPanel": [
+    "immersive-panel",
+    "code-immersive-panel",
+    "[data-test-id='immersive-panel']",
+    ".immersive-editor-container"
+  ],
+  "generatedImages": [
+    "model-response generated-image img",
+    "model-response img[src*='googleusercontent.com']",
+    "model-response img[src^='blob:']",
+    "model-response single-image img"
+  ],
+  "generatedVideos": [
+    "model-response video",
+    "model-response video source"
+  ],
+  "mediaDownloadButtons": [
+    "model-response button[aria-label*='Download' i]",
+    "model-response button[aria-label*='下载']",
+    "model-response a[download]"
+  ],
+  "gemLinks": [
+    "a[href*='/gem/']"
+  ]
+}
