@@ -536,6 +536,33 @@ export class GeminiEngine {
     return chosen.name;
   }
 
+  private async dismissOnboardingModal(page: Page): Promise<boolean> {
+    const modalSelectors = [
+      ".cdk-overlay-pane button:has-text('Try it')",
+      ".cdk-overlay-pane button:has-text('Got it')",
+      ".cdk-overlay-pane button:has-text('Continue')",
+      ".cdk-overlay-pane button:has-text('试试看')",
+      ".cdk-overlay-pane button:has-text('立即体验')",
+      ".cdk-overlay-pane button:has-text('知道了')",
+      "mat-dialog-container button:has-text('Try it')",
+      "mat-dialog-container button:has-text('Got it')",
+    ];
+    const btn = await findFirstVisible(page, modalSelectors, 1200);
+    if (!btn) return false;
+    await btn.locator.click().catch(() => undefined);
+    await sleep(600);
+    return true;
+  }
+
+  private async dismissOverlays(page: Page): Promise<void> {
+    for (let i = 0; i < 3; i++) {
+      const overlayCount = await page.locator(".cdk-overlay-pane").count().catch(() => 0);
+      if (overlayCount === 0) return;
+      await page.keyboard.press("Escape").catch(() => undefined);
+      await sleep(250);
+    }
+  }
+
   private async selectModeOnPage(
     page: Page,
     selectors: SelectorsConfig,
@@ -543,14 +570,28 @@ export class GeminiEngine {
     taskId: string,
   ): Promise<void> {
     if (mode === "chat") return;
-    // In continued conversations, Gemini keeps the active mode chip mounted in the composer (e.g. "Images")
+    // In continued conversations, Gemini keeps the active mode chip mounted in the composer (e.g. "Images" / "Videos")
     if (mode === "image") {
       const alreadyActive = await findFirstVisible(
         page,
-        ["button:has-text('Images')", "button[aria-label*='Remove Images' i]", "button:has-text('图片')"],
+        ["button:has-text('Images')", "button[aria-label*='Remove Images' i]", "button[aria-label*='Deselect Images' i]", "button:has-text('图片')"],
         400,
       );
-      if (alreadyActive) return;
+      if (alreadyActive) {
+        await this.dismissOnboardingModal(page);
+        return;
+      }
+    }
+    if (mode === "video") {
+      const alreadyActive = await findFirstVisible(
+        page,
+        ["button[aria-label*='Deselect Videos' i]", "button[aria-label*='Remove Videos' i]", "button[aria-label*='Deselect Video' i]"],
+        400,
+      );
+      if (alreadyActive) {
+        await this.dismissOnboardingModal(page);
+        return;
+      }
     }
     const chipSelectors = selectors.modeChips[mode];
     if (!chipSelectors || chipSelectors.length === 0) {
@@ -603,7 +644,11 @@ export class GeminiEngine {
     }
 
     await chip.locator.click();
-    await sleep(450);
+    await sleep(650);
+    // Dismiss one-time feature onboarding dialog (e.g. "Create videos With Gemini Omni -> Try it")
+    await this.dismissOnboardingModal(page);
+    // Ensure any lingering Upload & tools / More tools cdk-overlay-pane is closed before uploading files
+    await this.dismissOverlays(page);
   }
 
   private async uploadFilesOnPage(
@@ -613,6 +658,9 @@ export class GeminiEngine {
     taskId: string,
   ): Promise<void> {
     if (!files || files.length === 0) return;
+
+    await this.dismissOnboardingModal(page);
+    await this.dismissOverlays(page);
 
     const resolvedFiles = files.map((f) => {
       const resolved = path.resolve(f);
@@ -851,11 +899,34 @@ export class GeminiEngine {
     }
 
     if (mode === "video") {
-      const vids = latestResponse.locator("video, video source");
-      if ((await vids.count().catch(() => 0)) > 0) return true;
+      const vids = latestResponse.locator("video");
+      const vCount = await vids.count().catch(() => 0);
+      for (let i = 0; i < vCount; i++) {
+        const ready = await vids
+          .nth(i)
+          .evaluate((el) => {
+            const v = el as HTMLVideoElement;
+            const src = v.currentSrc || v.src || v.querySelector("source")?.getAttribute("src") || "";
+            return src.length > 0 || v.readyState >= 1;
+          })
+          .catch(() => false);
+        if (ready) return true;
+      }
+      const dlBtn = await findFirstVisible(
+        latestResponse,
+        ["button[aria-label*='Download' i]", "button[aria-label*='下载']", "a[download]"],
+        250,
+      );
+      if (dlBtn) return true;
+
+      const text = (await latestResponse.innerText().catch(() => "")).trim();
+      const inProgress =
+        /generating|creating|rendering|processing|loading|just a moment|may take a|takes a few|working on|正在生成|生成中|请稍候|制作中/i.test(
+          text,
+        );
+      if (inProgress) return false;
       const hasCopy = (await findFirstVisible(latestResponse, selectors.copyResponseButton, 250)) !== null;
-      const textLen = (await latestResponse.innerText().catch(() => "")).trim().length;
-      return hasCopy && textLen > 40;
+      return hasCopy && text.length > 40;
     }
 
     return true;
@@ -945,6 +1016,13 @@ export class GeminiEngine {
       };
     };
 
+    // Hover over generated video/image first so hover-only Download buttons become visible
+    const firstVid = latestResponse.locator("video").first();
+    if ((await firstVid.count().catch(() => 0)) > 0) {
+      await firstVid.hover().catch(() => undefined);
+      await sleep(300);
+    }
+
     // Priority 1: Use Gemini's official Download button (captures full-size uncompressed image/video)
     const dlBtns = latestResponse.locator(
       "button[aria-label*='Download full size' i], button[aria-label*='Download' i], button[aria-label*='下载'], a[download]",
@@ -956,7 +1034,7 @@ export class GeminiEngine {
       if (!(await btn.isVisible().catch(() => false))) continue;
       try {
         const [download] = await Promise.all([
-          page.waitForEvent("download", { timeout: 15000 }),
+          page.waitForEvent("download", { timeout: 30000 }),
           btn.click(),
         ]);
         const suggested = download.suggestedFilename() || `media-${String(dlIdx).padStart(2, "0")}.png`;
@@ -1011,7 +1089,7 @@ export class GeminiEngine {
       }
 
       if (/^https?:\/\//i.test(url)) {
-        const resp = await page.request.get(url, { timeout: 30000 }).catch(() => null);
+        const resp = await page.request.get(url, { timeout: 60000 }).catch(() => null);
         if (!resp || !resp.ok()) return null;
         const mimeType = resp.headers()["content-type"];
         const buf = await resp.body();
@@ -1073,7 +1151,13 @@ export class GeminiEngine {
     const vidCount = await vidLoc.count().catch(() => 0);
     let vidIdx = 1;
     for (let i = 0; i < vidCount; i++) {
-      const src = await vidLoc.nth(i).getAttribute("src").catch(() => null);
+      const src = await vidLoc
+        .nth(i)
+        .evaluate((el) => {
+          const v = el as HTMLVideoElement;
+          return v.currentSrc || el.getAttribute("src") || "";
+        })
+        .catch(() => "");
       if (!src || seenUrls.has(src)) continue;
       seenUrls.add(src);
       const downloaded = await fetchFromBrowser(src);
