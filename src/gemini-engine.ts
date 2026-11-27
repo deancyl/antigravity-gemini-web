@@ -692,8 +692,26 @@ export class GeminiEngine {
 
     const uploadOption = await findFirstVisible(page, selectors.uploadFileOption, 2000);
     if (uploadOption) {
+      const optDisabled =
+        (await uploadOption.locator.getAttribute("aria-disabled").catch(() => null)) === "true" ||
+        (await uploadOption.locator.isDisabled().catch(() => false));
+      if (optDisabled) {
+        await page.keyboard.press("Escape").catch(() => undefined);
+        const bannerText = (
+          await page
+            .locator("text=/until|Upgrade|Learn more|limit|上限|升级/i")
+            .first()
+            .innerText()
+            .catch(() => "")
+        ).trim();
+        throw new BridgeError(
+          "QUOTA_EXCEEDED",
+          `当前账号的上传入口已灰显禁用，可能已触达视频/媒体滚动限额${bannerText ? `（页面提示: ${bannerText.slice(0, 120)}）` : ""}。`,
+          { bannerText },
+        );
+      }
       const [fileChooser] = await Promise.all([
-        page.waitForEvent("filechooser", { timeout: 6000 }),
+        page.waitForEvent("filechooser", { timeout: 8000 }),
         uploadOption.locator.click(),
       ]);
       await fileChooser.setFiles(resolvedFiles);
@@ -920,12 +938,18 @@ export class GeminiEngine {
       if (dlBtn) return true;
 
       const text = (await latestResponse.innerText().catch(() => "")).trim();
+      const isRefusalOrError =
+        /i'm sorry|sorry,|unusually high traffic|full capacity|try again later|can't generate|cannot generate|unable to|reached your.*limit|usage limit|daily limit|violates|policy|抱歉|无法生成|上限|繁忙|稍后再试/i.test(
+          text,
+        );
+      const hasCopy = (await findFirstVisible(latestResponse, selectors.copyResponseButton, 250)) !== null;
+      if (isRefusalOrError && (hasCopy || text.length > 25)) return true;
+
       const inProgress =
-        /generating|creating|rendering|processing|loading|just a moment|may take a|takes a few|working on|正在生成|生成中|请稍候|制作中/i.test(
+        /generating your video|creating your video|rendering your video|processing your video|just a moment|may take a few|takes a few|working on your video|正在生成视频|视频生成中|请稍候/i.test(
           text,
         );
       if (inProgress) return false;
-      const hasCopy = (await findFirstVisible(latestResponse, selectors.copyResponseButton, 250)) !== null;
       return hasCopy && text.length > 40;
     }
 
@@ -1016,11 +1040,12 @@ export class GeminiEngine {
       };
     };
 
-    // Hover over generated video/image first so hover-only Download buttons become visible
+    // Scroll video into view and hover first so hover-only Download buttons become visible even on later turns
     const firstVid = latestResponse.locator("video").first();
     if ((await firstVid.count().catch(() => 0)) > 0) {
+      await firstVid.scrollIntoViewIfNeeded().catch(() => undefined);
       await firstVid.hover().catch(() => undefined);
-      await sleep(300);
+      await sleep(650);
     }
 
     // Priority 1: Use Gemini's official Download button (captures full-size uncompressed image/video)
@@ -1089,6 +1114,25 @@ export class GeminiEngine {
       }
 
       if (/^https?:\/\//i.test(url)) {
+        // Prefer in-browser fetch first so downloads use Chrome's system proxy & cookies (avoids Node ETIMEDOUT)
+        const inPage = await page
+          .evaluate(async (u) => {
+            const resp = await fetch(u, { credentials: "include" });
+            if (!resp.ok) return null;
+            const mime = resp.headers.get("content-type") || undefined;
+            const ab = await resp.arrayBuffer();
+            const bytes = new Uint8Array(ab);
+            let binary = "";
+            const chunk = 0x8000;
+            for (let i = 0; i < bytes.length; i += chunk) {
+              binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+            }
+            return { b64: btoa(binary), mime };
+          }, url)
+          .catch(() => null);
+        if (inPage && inPage.b64) {
+          return { buf: Buffer.from(inPage.b64, "base64"), mimeType: inPage.mime };
+        }
         const resp = await page.request.get(url, { timeout: 60000 }).catch(() => null);
         if (!resp || !resp.ok()) return null;
         const mimeType = resp.headers()["content-type"];
