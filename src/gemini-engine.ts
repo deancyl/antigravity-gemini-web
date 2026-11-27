@@ -3,7 +3,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { Locator, Page } from "playwright-core";
 import {
+  findStaleFallbackAccounts,
   inferAccountTier,
+  isTierStale,
   recordAccountQuotaCooldown,
   resolveAccountCandidates,
 } from "./account-router.js";
@@ -17,6 +19,9 @@ import {
   StateStore,
 } from "./storage.js";
 import {
+  AccountRefreshSummary,
+  AccountTier,
+  AccountTierProbeResult,
   AskOptions,
   AskResult,
   BridgeConfig,
@@ -1214,23 +1219,212 @@ export class GeminiEngine {
     return assets;
   }
 
+  /**
+   * Layer 1/2/3 lightweight probe: loads Gemini home only (5ms passive Upgrade/Pro check)
+   * without clicking any menus. Only runs full capability inspection if the account tier
+   * actually changed (e.g. free -> pro or pro -> free), and optionally closes Chrome right after
+   * so background checks consume zero persistent RAM.
+   */
+  async probeAccountTierLightweight(
+    rawAccountId: string,
+    options: { closeAfter?: boolean } = {},
+  ): Promise<AccountTierProbeResult> {
+    this.guard.assertCircuitClosed();
+    const selectors = this.getSelectors();
+    const beforeSnap = this.store.getSnapshot();
+    const previousTier: AccountTier = beforeSnap.accounts[rawAccountId]?.tier ?? "unknown";
+    let authenticated = false;
+    let currentTier: AccountTier = previousTier;
+    let fullCapabilityRefreshed = false;
+    let errorMsg: string | undefined;
+
+    try {
+      await this.chromeManager.withAccountLock(rawAccountId, async (session) => {
+        const targetUrl = buildConversationUrl(selectors.appUrl, this.config.language);
+        await this.ensurePageLoaded(session, selectors, targetUrl);
+        authenticated = true;
+        // Ensure tierCheckedAt is always updated on a successful lightweight home check
+        const nowIso = new Date().toISOString();
+        await this.store.mutate((draft) => {
+          const acc = draft.accounts[session.accountId];
+          if (acc) {
+            acc.tierCheckedAt = nowIso;
+          }
+        });
+      });
+
+      const afterSnap = this.store.getSnapshot();
+      currentTier = afterSnap.accounts[rawAccountId]?.tier ?? previousTier;
+
+      if (authenticated && currentTier !== previousTier) {
+        await this.inspectCapabilities(rawAccountId);
+        fullCapabilityRefreshed = true;
+        currentTier = this.store.getSnapshot().accounts[rawAccountId]?.tier ?? currentTier;
+      }
+    } catch (err) {
+      errorMsg = err instanceof Error ? err.message : String(err);
+      if (err instanceof BridgeError && err.code === "NEED_USER_ACTION") {
+        throw err;
+      }
+    } finally {
+      if (options.closeAfter) {
+        await this.chromeManager.closeSession(rawAccountId).catch(() => undefined);
+      }
+    }
+
+    return {
+      accountId: rawAccountId,
+      previousTier,
+      currentTier,
+      changed: currentTier !== previousTier,
+      authenticated,
+      fullCapabilityRefreshed,
+      checkedAt: new Date().toISOString(),
+      ...(errorMsg ? { error: errorMsg } : {}),
+    };
+  }
+
+  /**
+   * Strictly single-threaded sequential refresh for stale or all accounts.
+   */
+  async refreshAccounts(options: {
+    scope: "stale" | "all" | "single";
+    account?: string;
+    closeAfter?: boolean;
+    maxAccounts?: number;
+    spacingMs?: number;
+  }): Promise<AccountRefreshSummary> {
+    this.guard.assertCircuitClosed();
+    const snap = this.store.getSnapshot();
+    let targets: string[] = [];
+
+    if (options.scope === "single" && options.account) {
+      targets = [options.account];
+    } else {
+      const refreshHours = this.config.tierRefreshHours ?? 24;
+      targets = Object.values(snap.accounts)
+        .filter((acc) => {
+          if (acc.lastAuthStatus === "need_auth") return false;
+          if (options.scope === "stale") return isTierStale(acc, refreshHours);
+          return true;
+        })
+        .sort((a, b) =>
+          (a.tierCheckedAt || a.lastAuthCheckedAt || "").localeCompare(
+            b.tierCheckedAt || b.lastAuthCheckedAt || "",
+          ),
+        )
+        .map((acc) => acc.id);
+    }
+
+    if (typeof options.maxAccounts === "number" && options.maxAccounts > 0) {
+      targets = targets.slice(0, options.maxAccounts);
+    }
+
+    const results: AccountTierProbeResult[] = [];
+    const spacingMs = Math.max(0, options.spacingMs ?? this.config.minGlobalStaggerMs ?? 2500);
+
+    for (let i = 0; i < targets.length; i++) {
+      this.guard.assertCircuitClosed();
+      if (i > 0 && spacingMs > 0) {
+        await sleep(spacingMs);
+      }
+      const res = await this.probeAccountTierLightweight(targets[i], {
+        closeAfter: options.closeAfter ?? true,
+      });
+      results.push(res);
+    }
+
+    return {
+      scope: options.scope,
+      checkedCount: results.length,
+      changedCount: results.filter((r) => r.changed).length,
+      results,
+    };
+  }
+
+  /**
+   * Layer 2 fallback: when all known Pro accounts are exhausted/cooled, probe stale non-Pro
+   * accounts sequentially to see if any was recently upgraded to Pro.
+   */
+  private async probeStaleAccountsForPromotion(
+    mode: InteractionMode,
+    excludeAccounts: ReadonlySet<string>,
+  ): Promise<string | null> {
+    const staleFallbacks = findStaleFallbackAccounts(this.store.getSnapshot(), this.config, {
+      mode,
+      excludeAccounts,
+    });
+    for (const acc of staleFallbacks) {
+      appendLog(
+        this.paths,
+        "INFO",
+        `Pro pool exhausted for mode=${mode}; probing stale account=${acc.id} for possible Pro upgrade`,
+      );
+      const probe = await this.probeAccountTierLightweight(acc.id, { closeAfter: false });
+      if (probe.authenticated && probe.currentTier === "pro") {
+        appendLog(
+          this.paths,
+          "INFO",
+          `Stale account=${acc.id} promoted to Pro during exhaustion fallback!`,
+        );
+        return acc.id;
+      }
+      await this.chromeManager.closeSession(acc.id).catch(() => undefined);
+    }
+    return null;
+  }
+
   async ask(options: AskOptions): Promise<AskResult> {
     this.guard.assertCircuitClosed();
     const mode: InteractionMode = options.mode ?? "chat";
     const allowParallel = Boolean(options.allowParallel) && !options.conversationId;
-    const route = resolveAccountCandidates(this.store.getSnapshot(), this.config, {
-      explicitAccount: options.account,
-      mode,
-      model: options.model,
-      conversationId: options.conversationId,
-      allowParallel,
-      busyAccounts: this.guard.getBusyAccounts(),
-    });
-
+    const triedAccounts = new Set<string>();
     const failoverHistory: Array<{ fromAccount: string; toAccount: string; reason: string }> = [];
 
-    for (let idx = 0; idx < route.candidates.length; idx++) {
-      const accountId = route.candidates[idx];
+    let route;
+    try {
+      route = resolveAccountCandidates(this.store.getSnapshot(), this.config, {
+        explicitAccount: options.account,
+        mode,
+        model: options.model,
+        conversationId: options.conversationId,
+        allowParallel,
+        busyAccounts: this.guard.getBusyAccounts(),
+      });
+    } catch (err) {
+      // Layer 2: Before throwing ALL_ACCOUNTS_QUOTA_EXCEEDED, probe stale cold accounts for a newly upgraded Pro
+      if (
+        err instanceof BridgeError &&
+        err.code === "ALL_ACCOUNTS_QUOTA_EXCEEDED" &&
+        !options.account &&
+        !options.conversationId
+      ) {
+        const promotedId = await this.probeStaleAccountsForPromotion(mode, triedAccounts);
+        if (promotedId) {
+          failoverHistory.push({
+            fromAccount: "pro_pool_cooled",
+            toAccount: promotedId,
+            reason: "stale_account_promoted_to_pro",
+          });
+          route = resolveAccountCandidates(this.store.getSnapshot(), this.config, {
+            mode,
+            model: options.model,
+            allowParallel,
+            busyAccounts: this.guard.getBusyAccounts(),
+          });
+        } else {
+          throw err;
+        }
+      } else {
+        throw err;
+      }
+    }
+
+    const candidates = [...route.candidates];
+
+    for (let idx = 0; idx < candidates.length; idx++) {
+      const accountId = candidates[idx];
+      triedAccounts.add(accountId);
       try {
         const res = await this.guard.acquireExecution({ allowParallel, accountId }, () =>
           this.askOnSingleAccount(accountId, options),
@@ -1248,7 +1442,15 @@ export class GeminiEngine {
             mode,
             err.message,
           );
-          const nextAccount = route.candidates[idx + 1];
+          let nextAccount = candidates[idx + 1];
+          // Layer 2: if no more known candidates left, probe stale cold accounts before giving up
+          if (!nextAccount && !route.lockedReason) {
+            const promotedId = await this.probeStaleAccountsForPromotion(mode, triedAccounts);
+            if (promotedId) {
+              candidates.push(promotedId);
+              nextAccount = promotedId;
+            }
+          }
           if (nextAccount && !route.lockedReason) {
             failoverHistory.push({
               fromAccount: accountId,
@@ -1452,17 +1654,43 @@ export class GeminiEngine {
   }> {
     this.guard.assertCircuitClosed();
     const allowParallel = Boolean(options.allowParallel);
-    const route = resolveAccountCandidates(this.store.getSnapshot(), this.config, {
-      explicitAccount: options.account,
-      mode: "deep_research",
-      model: options.model,
-      allowParallel,
-      busyAccounts: this.guard.getBusyAccounts(),
-    });
+    const triedAccounts = new Set<string>();
+    let route;
+    try {
+      route = resolveAccountCandidates(this.store.getSnapshot(), this.config, {
+        explicitAccount: options.account,
+        mode: "deep_research",
+        model: options.model,
+        allowParallel,
+        busyAccounts: this.guard.getBusyAccounts(),
+      });
+    } catch (err) {
+      if (
+        err instanceof BridgeError &&
+        err.code === "ALL_ACCOUNTS_QUOTA_EXCEEDED" &&
+        !options.account
+      ) {
+        const promotedId = await this.probeStaleAccountsForPromotion("deep_research", triedAccounts);
+        if (promotedId) {
+          route = resolveAccountCandidates(this.store.getSnapshot(), this.config, {
+            mode: "deep_research",
+            model: options.model,
+            allowParallel,
+            busyAccounts: this.guard.getBusyAccounts(),
+          });
+        } else {
+          throw err;
+        }
+      } else {
+        throw err;
+      }
+    }
     const selectors = this.getSelectors();
+    const candidates = [...route.candidates];
 
-    for (let idx = 0; idx < route.candidates.length; idx++) {
-      const accountId = route.candidates[idx];
+    for (let idx = 0; idx < candidates.length; idx++) {
+      const accountId = candidates[idx];
+      triedAccounts.add(accountId);
       try {
         return await this.guard.acquireExecution({ allowParallel, accountId }, () =>
           this.chromeManager.withAccountLock(accountId, async (session) => {
@@ -1589,7 +1817,17 @@ export class GeminiEngine {
             "deep_research",
             err.message,
           );
-          const nextAccount = route.candidates[idx + 1];
+          let nextAccount = candidates[idx + 1];
+          if (!nextAccount && !route.lockedReason) {
+            const promotedId = await this.probeStaleAccountsForPromotion(
+              "deep_research",
+              triedAccounts,
+            );
+            if (promotedId) {
+              candidates.push(promotedId);
+              nextAccount = promotedId;
+            }
+          }
           if (nextAccount && !route.lockedReason) {
             appendLog(
               this.paths,

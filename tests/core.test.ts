@@ -7,6 +7,8 @@ import path from "node:path";
 import test from "node:test";
 import {
   clearAccountQuotaCooldown,
+  findNextStaleAccountForReconcile,
+  findStaleFallbackAccounts,
   inferAccountTier,
   isTierStale,
   recordAccountQuotaCooldown,
@@ -34,7 +36,12 @@ function createTempToolRoot(): string {
   fs.mkdirSync(path.join(tmp, "config"), { recursive: true });
   fs.writeFileSync(
     path.join(tmp, "config", "config.json"),
-    JSON.stringify({ daemonHost: "127.0.0.1", daemonPort: 28790, defaultAccount: "default" }),
+    JSON.stringify({
+      daemonHost: "127.0.0.1",
+      daemonPort: 28790,
+      defaultAccount: "default",
+      tierReconcileIntervalMinutes: 0,
+    }),
     "utf8",
   );
   // Copy real selectors.json
@@ -156,6 +163,31 @@ test("daemon: startup, health signature, token guard, account persistence, and g
     const unauth = await fetch(`http://${running.host}:${running.port}/api/accounts`);
     assert.equal(unauth.status, 403);
 
+    // Layer 3: POST /api/accounts/refresh enforces token guard & returns cleanly with 0 stale accounts
+    const unauthRefresh = await fetch(`http://${running.host}:${running.port}/api/accounts/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope: "stale" }),
+    });
+    assert.equal(unauthRefresh.status, 403);
+
+    const refreshResp = await fetch(`http://${running.host}:${running.port}/api/accounts/refresh`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-bridge-token": running.token,
+      },
+      body: JSON.stringify({ scope: "stale" }),
+    });
+    assert.equal(refreshResp.status, 200);
+    const refreshJson = (await refreshResp.json()) as {
+      ok: boolean;
+      refreshSummary: { scope: string; checkedCount: number; changedCount: number };
+    };
+    assert.equal(refreshJson.ok, true);
+    assert.equal(refreshJson.refreshSummary.scope, "stale");
+    assert.equal(refreshJson.refreshSummary.checkedCount, 0);
+
     // Authorized default account switch persists to state.json
     const swResp = await fetch(`http://${running.host}:${running.port}/api/accounts/default`, {
       method: "POST",
@@ -230,7 +262,7 @@ test("mcp-server: stdio initialize + tools/list exposes all gemini_web_* tools",
     }
 
     const listResp = messages.find((m) => m.id === 2) as
-      | { result?: { tools?: Array<{ name: string }> } }
+      | { result?: { tools?: Array<{ name: string; inputSchema?: { properties?: Record<string, unknown> } }> } }
       | undefined;
     assert.ok(listResp?.result?.tools, "MCP tools/list response not received");
     const names = listResp.result.tools.map((t) => t.name);
@@ -248,6 +280,9 @@ test("mcp-server: stdio initialize + tools/list exposes all gemini_web_* tools",
     ]) {
       assert.ok(names.includes(expected), `Missing MCP tool: ${expected}`);
     }
+    const listAccountsTool = listResp.result.tools.find((t) => t.name === "gemini_web_list_accounts");
+    assert.ok(listAccountsTool?.inputSchema?.properties?.refresh_stale, "refresh_stale param missing");
+    assert.ok(listAccountsTool?.inputSchema?.properties?.refresh_all, "refresh_all param missing");
   } finally {
     child.kill();
   }
@@ -439,7 +474,82 @@ test("execution-guard & idle-first routing: single-thread default, opt-in parall
   });
   assert.equal(parallelRoute.candidates[0], "pro_backup");
 
-  // 6. Tier staleness check (24h TTL)
+  // 6. Tier staleness check (24h TTL) & Layer 1/2 stale selection invariants
   assert.equal(isTierStale(mockState.accounts.pro_primary, 24), false);
   assert.equal(isTierStale(mockState.accounts.pro_backup, 24), true);
+
+  const staleState = {
+    version: 1,
+    defaultAccount: "pro_primary",
+    accounts: {
+      pro_primary: {
+        id: "pro_primary",
+        profileDir: "p1",
+        createdAt: now,
+        tier: "pro" as const,
+        tierCheckedAt: now,
+        lastAuthStatus: "authenticated" as const,
+      },
+      free_fresh: {
+        id: "free_fresh",
+        profileDir: "p2",
+        createdAt: now,
+        tier: "free" as const,
+        tierCheckedAt: now,
+        lastAuthStatus: "authenticated" as const,
+      },
+      free_stale_oldest: {
+        id: "free_stale_oldest",
+        profileDir: "p3",
+        createdAt: now,
+        tier: "free" as const,
+        tierCheckedAt: new Date(Date.now() - 72 * 3_600_000).toISOString(),
+        lastAuthStatus: "authenticated" as const,
+      },
+      free_stale_newer: {
+        id: "free_stale_newer",
+        profileDir: "p4",
+        createdAt: now,
+        tier: "free" as const,
+        tierCheckedAt: new Date(Date.now() - 30 * 3_600_000).toISOString(),
+        lastAuthStatus: "authenticated" as const,
+      },
+      free_stale_need_auth: {
+        id: "free_stale_need_auth",
+        profileDir: "p5",
+        createdAt: now,
+        tier: "free" as const,
+        tierCheckedAt: new Date(Date.now() - 96 * 3_600_000).toISOString(),
+        lastAuthStatus: "need_auth" as const,
+      },
+      free_stale_cooled: {
+        id: "free_stale_cooled",
+        profileDir: "p6",
+        createdAt: now,
+        tier: "free" as const,
+        tierCheckedAt: new Date(Date.now() - 80 * 3_600_000).toISOString(),
+        lastAuthStatus: "authenticated" as const,
+        quotaCooldowns: {
+          video: {
+            recordedAt: now,
+            until: new Date(Date.now() + 3_600_000).toISOString(),
+            reason: "limit",
+          },
+        },
+      },
+    },
+    conversations: {},
+    tasks: {},
+  };
+
+  // Layer 2: only stale, authenticated, non-pro, non-cooled accounts returned in stalest-first order
+  const fallbacks = findStaleFallbackAccounts(staleState, { tierRefreshHours: 24 }, { mode: "video" });
+  assert.deepEqual(
+    fallbacks.map((a) => a.id),
+    ["free_stale_oldest", "free_stale_newer"],
+  );
+
+  // Layer 1: picks single stalest authenticated account (excludes need_auth)
+  const nextReconcile = findNextStaleAccountForReconcile(staleState, { tierRefreshHours: 24 });
+  assert.equal(nextReconcile?.id, "free_stale_cooled");
 });

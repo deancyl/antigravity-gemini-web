@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import http from "node:http";
 import {
   clearAccountQuotaCooldown,
+  findNextStaleAccountForReconcile,
   getActiveCooldownsMap,
   isTierStale,
   resolveAccountCandidates,
@@ -180,6 +181,43 @@ export async function startDaemon(rootDir?: string): Promise<RunningDaemon> {
         }));
         sendJson(res, 200, {
           ok: true,
+          defaultAccount: snap.defaultAccount,
+          routingPolicy: config.routingPolicy,
+          guard: guard.getStatus(),
+          accounts,
+        });
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/accounts/refresh") {
+        const body = await readJsonBody(req);
+        const rawScope = typeof body.scope === "string" ? body.scope : "stale";
+        const scope: "stale" | "all" | "single" =
+          rawScope === "all" ? "all" : rawScope === "single" ? "single" : "stale";
+        const account =
+          typeof body.account === "string" && body.account.trim()
+            ? sanitizeSegment(body.account, "account")
+            : undefined;
+        const refreshSummary = await engine.refreshAccounts({
+          scope: account ? "single" : scope,
+          account,
+          closeAfter: true,
+        });
+        const snap = store.getSnapshot();
+        const active = new Map(
+          chromeManager.getActiveSessionSummary().map((s) => [s.accountId, s]),
+        );
+        const accounts = Object.values(snap.accounts).map((acc) => ({
+          ...acc,
+          isDefault: acc.id === snap.defaultAccount,
+          sessionActive: active.get(acc.id)?.connected ?? false,
+          cdpPort: active.get(acc.id)?.cdpPort,
+          activeCooldowns: getActiveCooldownsMap(acc),
+          tierStale: isTierStale(acc, config.tierRefreshHours),
+        }));
+        sendJson(res, 200, {
+          ok: true,
+          refreshSummary,
           defaultAccount: snap.defaultAccount,
           routingPolicy: config.routingPolicy,
           guard: guard.getStatus(),
@@ -513,9 +551,50 @@ export async function startDaemon(rootDir?: string): Promise<RunningDaemon> {
     }
   });
 
+  // Layer 1: ultra-conservative idle stale-account reconciler (1 account per tick, closes Chrome immediately)
+  let reconcileTimer: NodeJS.Timeout | null = null;
+  let reconciling = false;
+  const reconcileMins = config.tierReconcileIntervalMinutes ?? 60;
+  if (reconcileMins > 0) {
+    reconcileTimer = setInterval(() => {
+      if (shuttingDown || reconciling) return;
+      const gStatus = guard.getStatus();
+      if (gStatus.activeCount > 0 || gStatus.queuedCount > 0 || gStatus.circuitBreakerOpenUntil) {
+        return;
+      }
+      const nextStale = findNextStaleAccountForReconcile(store.getSnapshot(), config);
+      if (!nextStale) return;
+      reconciling = true;
+      void engine
+        .probeAccountTierLightweight(nextStale.id, { closeAfter: true })
+        .then((res) => {
+          appendLog(
+            paths,
+            "INFO",
+            `Idle tier reconcile account=${res.accountId}: ${res.previousTier} -> ${res.currentTier} (changed=${res.changed})`,
+          );
+        })
+        .catch((err) => {
+          appendLog(
+            paths,
+            "WARN",
+            `Idle tier reconcile skipped/failed for account=${nextStale.id}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        })
+        .finally(() => {
+          reconciling = false;
+        });
+    }, reconcileMins * 60 * 1000);
+    reconcileTimer.unref();
+  }
+
   const shutdown = async (): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
+    if (reconcileTimer) {
+      clearInterval(reconcileTimer);
+      reconcileTimer = null;
+    }
     appendLog(paths, "INFO", `Daemon shutting down (pid=${process.pid}, port=${port})`);
     await chromeManager.closeAllSessions();
     store.clearDaemonInfoIfOwner(process.pid);

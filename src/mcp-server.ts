@@ -41,10 +41,25 @@ export function createGeminiWebMcpServer(rootDir?: string): McpServer {
 
   server.tool(
     "gemini_web_list_accounts",
-    "列出所有已配置的 Gemini 网页版独立账号 Profile、默认账号、最近认证状态与会话活跃度。",
-    {},
-    async () => {
+    "列出所有已配置的 Gemini 网页版独立账号 Profile、默认账号、最近认证状态、等级与冷却状态；可选传入 refresh_stale=true 串行静默刷新所有超期未检账号，或 refresh_all=true 刷新全部账号等级。",
+    {
+      refresh_stale: z
+        .boolean()
+        .optional()
+        .describe("设为 true 时先单线程静默刷新所有 tierStale 过期账号的会员等级（默认 false 不刷新）"),
+      refresh_all: z
+        .boolean()
+        .optional()
+        .describe("设为 true 时先单线程静默刷新全部已登录账号的会员等级（刚充值想立刻全量生效时使用，默认 false）"),
+    },
+    async ({ refresh_stale, refresh_all }) => {
       try {
+        if (refresh_all === true || refresh_stale === true) {
+          const scope = refresh_all === true ? "all" : "stale";
+          return formatResult(
+            await client.request("POST", "/api/accounts/refresh", { scope }, 180000),
+          );
+        }
         return formatResult(await client.request("GET", "/api/accounts"));
       } catch (err) {
         return formatResult({

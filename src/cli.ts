@@ -49,6 +49,16 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "refresh") {
+    const scopeOrAccount = arg1 || "stale";
+    const body =
+      scopeOrAccount === "stale" || scopeOrAccount === "all"
+        ? { scope: scopeOrAccount }
+        : { scope: "single", account: scopeOrAccount };
+    console.log(JSON.stringify(await client.request("POST", "/api/accounts/refresh", body, 180000), null, 2));
+    return;
+  }
+
   if (command === "login") {
     const res = await client.request("POST", "/api/accounts/login", {
       ...(arg1 ? { account: arg1 } : {}),

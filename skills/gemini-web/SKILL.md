@@ -78,8 +78,14 @@ local daemon so long-running web tasks (Deep Research, video generation) survive
     filters by capability (`video` / `deep_research` / `canvas`), and skips accounts whose
     `(account, mode)` is in quota cooldown.
   - Every page load passively checks `pro <-> free` signals (`Upgrade` button vs
-    `Google membership`/`Pro`) and updates `tier` dynamically. If `gemini_web_list_accounts`
-    marks an account `tierStale: true`, call `gemini_web_list_capabilities(account)` to refresh.
+    `Google membership`/`Pro`) and updates `tier` dynamically. In addition, the daemon
+    runs a conservative idle reconciler (at most 1 stale account per hour, closing
+    Chrome immediately after) and probes stale cold accounts automatically if all
+    known Pro accounts hit quota cooldown.
+  - When the user just upgraded/downgraded a subscription and wants immediate effect
+    without naming individual accounts, call `gemini_web_list_accounts(refresh_all=true)`
+    (or `refresh_stale=true` for stale-only accounts) to refresh tiers sequentially in
+    the background and report any tier changes.
   - On `QUOTA_EXCEEDED` for a new task, the bridge automatically records a per-mode
     cooldown on that account and fails over to the next eligible account, reporting
     `failoverHistory`.

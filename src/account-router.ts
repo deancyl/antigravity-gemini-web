@@ -238,6 +238,57 @@ export function isTierStale(
   return nowMs - refMs > Math.max(1, tierRefreshHours) * 3_600_000;
 }
 
+/**
+ * Layer 2 helper: find cold stale non-Pro accounts that might have been upgraded to Pro
+ * since their last check, eligible for a lightweight fallback probe when Pro accounts are exhausted.
+ */
+export function findStaleFallbackAccounts(
+  state: PersistedState,
+  config: Pick<BridgeConfig, "tierRefreshHours">,
+  options: {
+    mode: InteractionMode;
+    excludeAccounts?: ReadonlySet<string>;
+    nowMs?: number;
+  },
+): AccountRecord[] {
+  const nowMs = options.nowMs ?? Date.now();
+  const refreshHours = config.tierRefreshHours ?? 24;
+  return Object.values(state.accounts)
+    .filter((acc) => {
+      if (options.excludeAccounts?.has(acc.id)) return false;
+      if (acc.lastAuthStatus === "need_auth") return false;
+      if (acc.tier === "pro") return false;
+      if (!isTierStale(acc, refreshHours, nowMs)) return false;
+      if (getActiveCooldown(acc, options.mode, nowMs) !== null) return false;
+      return true;
+    })
+    .sort((a, b) =>
+      (a.tierCheckedAt || a.lastAuthCheckedAt || "").localeCompare(
+        b.tierCheckedAt || b.lastAuthCheckedAt || "",
+      ),
+    );
+}
+
+/**
+ * Layer 1 helper: pick at most one authenticated/unknown stale account (stalest first)
+ * for ultra-conservative single-threaded background idle reconciliation.
+ */
+export function findNextStaleAccountForReconcile(
+  state: PersistedState,
+  config: Pick<BridgeConfig, "tierRefreshHours">,
+  nowMs = Date.now(),
+): AccountRecord | null {
+  const refreshHours = config.tierRefreshHours ?? 24;
+  const stale = Object.values(state.accounts)
+    .filter((acc) => acc.lastAuthStatus !== "need_auth" && isTierStale(acc, refreshHours, nowMs))
+    .sort((a, b) =>
+      (a.tierCheckedAt || a.lastAuthCheckedAt || "").localeCompare(
+        b.tierCheckedAt || b.lastAuthCheckedAt || "",
+      ),
+    );
+  return stale[0] ?? null;
+}
+
 export function parseCooldownDurationMs(
   reasonText: string | undefined,
   defaultMinutes: number,

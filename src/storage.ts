@@ -235,6 +235,7 @@ export const DEFAULT_CONFIG: BridgeConfig = {
   circuitBreakerMinutes: 10,
   idleSessionMinutes: 10,
   tierRefreshHours: 24,
+  tierReconcileIntervalMinutes: 60,
   navigationTimeoutMs: 45000,
   responseTimeoutMs: 180000,
   longTaskTimeoutMs: 900000,

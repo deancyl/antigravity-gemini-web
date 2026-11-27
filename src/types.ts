@@ -64,6 +64,7 @@ export interface BridgeConfig {
   circuitBreakerMinutes: number;
   idleSessionMinutes: number;
   tierRefreshHours: number;
+  tierReconcileIntervalMinutes: number;
   navigationTimeoutMs: number;
   responseTimeoutMs: number;
   longTaskTimeoutMs: number;
@@ -208,6 +209,24 @@ export interface CapabilitySnapshot {
   availableModes: string[];
   gems: Array<{ name: string; url: string }>;
   checkedAt: string;
+}
+
+export interface AccountTierProbeResult {
+  accountId: string;
+  previousTier: AccountTier;
+  currentTier: AccountTier;
+  changed: boolean;
+  authenticated: boolean;
+  fullCapabilityRefreshed: boolean;
+  checkedAt: string;
+  error?: string;
+}
+
+export interface AccountRefreshSummary {
+  scope: "stale" | "all" | "single";
+  checkedCount: number;
+  changedCount: number;
+  results: AccountTierProbeResult[];
 }
 
 export interface AskOptions {
